@@ -1,0 +1,3 @@
+[submodule "KiSC-ESP-Now-Protocol"]
+	path = KiSC-ESP-Now-Protocol
+	url = https://github.com/NewXtSI/KiSC-ESP-Now-Protocol
