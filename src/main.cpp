@@ -7,6 +7,9 @@ uint16_t uiThrottleMin = 32000;
 uint16_t uiThrottleMax = 0;
 uint16_t uiLastThrottle = 0;
 
+uint16_t uiBrakeMin = 32000;
+uint16_t uiBrakeMax = 0;
+uint16_t uiLastBrake = 0;   
 
 void recCallback(kisc::protocol::espnow::KiSCMessage message) {
 //    Serial.println("Received message");
@@ -25,13 +28,21 @@ OneButton motorButton = OneButton(
   true         // Enable internal pull-up resistor
 );
 
-void handleClick() {
-    Serial.println("Button clicked");
+void sendPeriphals(uint32_t uiThrottle, uint32_t uiBrake, bool bMotorButton) {
     kisc::protocol::espnow::KiSCMessage message;
     message.command = kisc::protocol::espnow::Command::PeriphalFeedback;
-    message.peripheralFeedback.throttle = uiLastThrottle;
-    message.peripheralFeedback.motorButton = true;
+    message.peripheralFeedback.throttle = uiThrottle;
+    message.peripheralFeedback.brake = uiBrake;
+    message.peripheralFeedback.motorButton = bMotorButton;
     sendKiSCMessage(MAIN_CONTROLLER_MAC, message);
+    uiLastThrottle = uiThrottle;
+    uiLastBrake = uiBrake;
+}
+
+
+void handleClick() {
+    Serial.println("Button clicked");
+    sendPeriphals(uiLastThrottle, uiLastBrake, true);
 }
 
 uint32_t lastHeartbeat = millis();
@@ -48,42 +59,47 @@ void setup() {
     motorButton.attachClick(handleClick);
 }
 
-void sendThrottle(uint16_t uiThrottle) {
-    kisc::protocol::espnow::KiSCMessage message;
-    message.command = kisc::protocol::espnow::Command::PeriphalFeedback;
-    message.peripheralFeedback.throttle = uiThrottle;
-    message.peripheralFeedback.motorButton = motorButton.isLongPressed();
-    sendKiSCMessage(MAIN_CONTROLLER_MAC, message);
-    uiLastThrottle = uiThrottle;
-}
-
 void loop() {
     loopESPNow();
     delay(1);
     if (millis() - lastHeartbeat > 20000) {
         Serial.printf("Sending heartbeat\n");
         sendHeartbeat();
-        sendThrottle(uiLastThrottle);
+        sendPeriphals(uiLastThrottle, uiLastBrake, motorButton.isLongPressed());
+        
         lastHeartbeat = millis();
     }
     if (millis() - lastMeasure > 100) {
-        uint16_t uiVal = analogRead(35);
+        uint16_t uiValThrottle = analogRead(35);
+        uint16_t uiValBrake = analogRead(34);
 //        Serial.printf("Analog value: %d\n", uiVal);
         lastMeasure = millis();
-        if (uiVal < uiThrottleMin) {
-            uiThrottleMin = uiVal;
+        if (uiValThrottle < uiThrottleMin) {
+            uiThrottleMin = uiValThrottle;
         }
-        if (uiVal > uiThrottleMax) {
-            uiThrottleMax = uiVal;
+        if (uiValThrottle > uiThrottleMax) {
+            uiThrottleMax = uiValThrottle;
         }
-        uint16_t uiThrottle = map(uiVal, uiThrottleMin, uiThrottleMax, 0, 511);
+        uint16_t uiThrottle = map(uiValThrottle, uiThrottleMin, uiThrottleMax, 0, 511);
         if (uiThrottle < 10)
             uiThrottle = 0;
         if (uiThrottle > 507)
             uiThrottle = 511;
-        if (uiThrottle != uiLastThrottle) {
+
+        if (uiValBrake < uiBrakeMin) {
+            uiBrakeMin = uiValBrake;
+        }
+        if (uiValBrake > uiBrakeMax) {
+            uiBrakeMax = uiValBrake;
+        }
+        uint16_t uiBrake = map(uiValBrake, uiBrakeMin, uiBrakeMax, 0, 511);
+        if (uiBrake < 10)
+            uiBrake = 0;
+        if (uiBrake > 507)
+            uiBrake = 511;
+        if ((uiThrottle != uiLastThrottle) || (uiBrake != uiLastBrake)) {
 //            Serial.printf("Throttle: %d\n", uiThrottle);
-            sendThrottle(uiThrottle);
+            sendPeriphals(uiThrottle, uiBrake, motorButton.isLongPressed());
         }
     }
 
