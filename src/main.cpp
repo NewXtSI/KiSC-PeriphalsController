@@ -11,6 +11,9 @@ uint16_t uiBrakeMin = 32000;
 uint16_t uiBrakeMax = 0;
 uint16_t uiLastBrake = 0;   
 
+#define DEADBAND_LOWER     20
+#define DEADBAND_UPPER     491
+
 void recCallback(kisc::protocol::espnow::KiSCMessage message) {
 //    Serial.println("Received message");
 }
@@ -81,9 +84,9 @@ void loop() {
             uiThrottleMax = uiValThrottle;
         }
         uint16_t uiThrottle = map(uiValThrottle, uiThrottleMin, uiThrottleMax, 0, 511);
-        if (uiThrottle < 10)
+        if (uiThrottle < DEADBAND_LOWER)
             uiThrottle = 0;
-        if (uiThrottle > 507)
+        if (uiThrottle > DEADBAND_UPPER)
             uiThrottle = 511;
 
         if (uiValBrake < uiBrakeMin) {
@@ -93,9 +96,9 @@ void loop() {
             uiBrakeMax = uiValBrake;
         }
         uint16_t uiBrake = map(uiValBrake, uiBrakeMin, uiBrakeMax, 0, 511);
-        if (uiBrake < 10)
+        if (uiBrake < DEADBAND_LOWER)
             uiBrake = 0;
-        if (uiBrake > 507)
+        if (uiBrake > DEADBAND_UPPER)
             uiBrake = 511;
         if ((uiThrottle != uiLastThrottle) || (uiBrake != uiLastBrake)) {
 //            Serial.printf("Throttle: %d\n", uiThrottle);
