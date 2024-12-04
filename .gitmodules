@@ -1,3 +1,6 @@
 [submodule "KiSC-ESP-Now-Protocol"]
 	path = KiSC-ESP-Now-Protocol
 	url = https://github.com/NewXtSI/KiSC-ESP-Now-Protocol
+[submodule "lib/Arduino-ESP32BluetoothController"]
+	path = lib/Arduino-ESP32BluetoothController
+	url = https://github.com/NewXtSI/Arduino-ESP32BluetoothController.git

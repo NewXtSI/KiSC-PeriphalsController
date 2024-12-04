@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "*.block": "javascript",
+        "btstack_run_loop.h": "c",
+        "btstack_run_loop_embedded.h": "c"
+    }
+}
