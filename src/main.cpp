@@ -8,8 +8,49 @@
 #include <OneButton.h>
 
 #define BT_CONTROLLER  0
-#define FEAT_GYRO      0
-#define FEAT_RFID      1
+#define FEAT_GYRO      1
+#define FEAT_RFID      0
+#define FEAT_SERVO      0
+
+#if FEAT_GYRO || FEAT_SERVO
+#define FEAT_I2C        1
+SemaphoreHandle_t i2cSemaphore;
+#else
+#define FEAT_I2C        0
+#endif
+
+
+
+#if FEAT_I2C
+#define FEAT_I2C_MAX8575    0
+#define FEAT_PCA9685        0
+#else
+#define FEAT_I2C_MAX8575    0
+#define FEAT_PCA9685        0
+#endif
+
+#if FEAT_I2C
+#include <Wire.h>
+#endif
+
+// MAX8575
+#if FEAT_I2C_MAX8575
+#define MAX8575_I2C_ADDRESS 0x48
+#endif
+
+#if FEAT_PCA9685
+#define SERVOMIN  150 // This is the 'minimum' pulse length count (out of 4096)
+#define SERVOMAX  600 // This is the 'maximum' pulse length count (out of 4096)
+#define USMIN  600 // This is the rounded 'minimum' microsecond length based on the minimum pulse of 150
+#define USMAX  2400 // This is the rounded 'maximum' microsecond length based on the maximum pulse of 600
+#define SERVO_FREQ 50 // Analog servos run at ~50 Hz updates
+
+#include <Adafruit_PWMServoDriver.h>
+
+// called this way, it uses the default address 0x40
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+#endif
+
 
 #if FEAT_GYRO
 #define MPU6050_CALIB       0
@@ -48,6 +89,13 @@ float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gra
 #include <MFRC522DriverPinSimple.h>
 #endif
 
+#if FEAT_SERVO
+#include <ESP32Servo.h> 
+Servo   steeringServo;
+#define         SERVO_PIN       13
+
+#endif
+
 #if BT_CONTROLLER 
 #include "ESP32Wiimote.h"
 #endif
@@ -67,9 +115,26 @@ uint16_t uiLastBrake = 0;
 ESP32Wiimote wiimote;
 #endif
 
+typedef struct {
+    int32_t     steering;
+    bool        steeringActive;
+    bool        parkingBrakeActive;
+} PeriphalData;
+
+PeriphalData periphalData = {0, false, false};
+
+int16_t       g_ypr[3] = {0, 0, 0};
+int16_t       g_acc[3] = {0, 0, 0};
 void recCallback(kisc::protocol::espnow::KiSCMessage message) {
+if (message.command == kisc::protocol::espnow::Command::PeriphalControl) {
+        DBGLOG(Debug, "Received periphal control message");
+        periphalData.steering = message.peripheralControl.steering;
+        periphalData.steeringActive = message.peripheralControl.steeringActive;
+        periphalData.parkingBrakeActive = message.peripheralControl.parkingBrakeActive;
+    }
 //    Serial.println("Received message");
 }
+
 void sendHeartbeat() {
     kisc::protocol::espnow::KiSCMessage message;
     message.command = kisc::protocol::espnow::Command::Ping;
@@ -90,6 +155,14 @@ void sendPeriphals(uint32_t uiThrottle, uint32_t uiBrake, bool bMotorButton) {
     message.peripheralFeedback.throttle = uiThrottle;
     message.peripheralFeedback.brake = uiBrake;
     message.peripheralFeedback.motorButton = bMotorButton;
+    message.peripheralFeedback.steering = 0;
+    message.peripheralFeedback.ypr[0] = g_ypr[0];
+    message.peripheralFeedback.ypr[1] = g_ypr[1];
+    message.peripheralFeedback.ypr[2] = g_ypr[2];
+    message.peripheralFeedback.acc[0] = g_acc[0];
+    message.peripheralFeedback.acc[1] = g_acc[1];
+    message.peripheralFeedback.acc[2] = g_acc[2];
+    
     sendKiSCMessage(MAIN_CONTROLLER_MAC, message);
     uiLastThrottle = uiThrottle;
     uiLastBrake = uiBrake;
@@ -183,7 +256,7 @@ void Initialize()
     uses the error from set-point (set-point is zero), it takes a fraction of this error (error * ki) and adds it 
     to the integral value. Each reading narrows the error down to the desired offset. The greater the error from 
     set-point, the more we adjust the integral value. The proportional does its part by hiding the noise from the 
-    integral math. The Derivative is not used because of the noise and because the sensor is stationary. With the 
+    integral math. The Derivative is not used because of the noise and because the sensor is stationary. With the                                              
     noise removed the integral value lands on a solid offset after just 600 readings. At the end of each set of 100 
     readings, the integral value is used for the actual offsets and the last proportional reading is ignored due to 
     the fact it reacts to any noise.
@@ -348,6 +421,62 @@ void SetAveraging(int NewN)
 
 #endif
 
+/*
+Initializing I2C devices...
+Testing device connections...
+MPU6050 connection successful
+PID tuning Each Dot = 100 readings
+>......>......
+at 600 Readings
+732.00000,      -901.00000,     502.00000,      184.00000,      51.00000,       16.00000
+
+
+>.>.700 Total Readings
+732.00000,      -901.00000,     500.00000,      184.00000,      50.00000,       17.00000
+
+
+>.>.800 Total Readings
+732.00000,      -901.00000,     500.00000,      184.00000,      49.00000,       16.00000
+
+
+>.>.900 Total Readings
+732.00000,      -901.00000,     500.00000,      185.00000,      51.00000,       16.00000
+
+
+>.>.1000 Total Readings
+732.00000,      -901.00000,     502.00000,      184.00000,      50.00000,       15.00000
+
+
+
+ Any of the above offsets will work nice 
+
+ Lets proof the PID tuning using another method:
+averaging 1000 readings each time
+expanding:
+....    XAccel                  YAccel                          ZAccel                  XGyro                   YGyro                   ZGyro
+ [0,0] --> [-6664,-6665]        [0,0] --> [8140,8148]   [0,0] --> [11483,11481] [0,0] --> [-735,-735]   [0,0] --> [-201,-201]   [0,0] --> [-63,-63]
+.... [0,1000] --> [-6664,2462]  [-1000,0] --> [-848,8156]       [0,1000] --> [11480,21231]      [0,1000] --> [-736,3263]        [0,1000] --> [-201,3796]        [0,1000] --> [-63,3931]
+
+closing in:
+..      XAccel                  YAccel                          ZAccel                  XGyro                   YGyro                   ZGyro
+ [500,1000] --> [-2099,2462]    [-1000,-500] --> [-848,3655]    [500,1000] --> [16348,21231]    [0,500] --> [-736,1267] [0,500] --> [-201,1801] [0,500] --> [-63,1937]
+.. [500,750] --> [-2099,182]    [-1000,-750] --> [-848,1408]    [500,750] --> [16348,18790]     [0,250] --> [-736,266]  [0,250] --> [-201,800]  [0,250] --> [-63,936]
+.. [625,750] --> [-966,182]     [-1000,-875] --> [-848,276]     [500,625] --> [16348,17557]     [125,250] --> [-232,266]        [0,125] --> [-201,300]  [0,125] --> [-63,436]
+.. [687,750] --> [-398,182]     [-937,-875] --> [-279,276]      [500,562] --> [16348,16954]     [125,187] --> [-232,14] [0,62] --> [-201,49]    [0,62] --> [-63,183]
+.. [718,750] --> [-105,182]     [-937,-906] --> [-279,8]        [500,531] --> [16348,16640]     [156,187] --> [-108,14] [31,62] --> [-74,49]    [0,31] --> [-63,59]
+..      XAccel                  YAccel                          ZAccel                  XGyro                   YGyro                   ZGyro
+ [718,734] --> [-105,43]        [-921,-906] --> [-133,8]        [500,515] --> [16348,16479]     [171,187] --> [-48,14]  [46,62] --> [-15,49]    [15,31] --> [-3,59]
+.. [726,734] --> [-35,43]       [-913,-906] --> [-58,8] [500,507] --> [16348,16403]     [179,187] --> [-16,14]  [46,54] --> [-15,16]    [15,23] --> [-3,27]
+.. [726,730] --> [-35,3]        [-909,-906] --> [-22,8] [503,507] --> [16362,16403]     [183,187] --> [0,14]    [50,54] --> [0,16]      [15,19] --> [-3,11]
+averaging 10000 readings each time
+.................... [728,730] --> [-15,3]      [-907,-906] --> [-1,8]  [505,507] --> [16383,16403]     [183,185] --> [0,8]     [50,52] --> [0,8]       [15,17] --> [-3,3]
+.................... [729,730] --> [-15,3]      [-907,-907] --> [-1,8]  [505,506] --> [16383,16401]     [183,184] --> [0,5]     [50,51] --> [0,4]       [16,17] --> [0,3]
+....................    XAccel                  YAccel                          ZAccel                  XGyro                   YGyro                   ZGyro
+ [729,730] --> [-12,3]  [-907,-907] --> [-1,12] [505,506] --> [16383,16401]     [183,183] --> [0,1]     [50,50] --> [0,1]       [16,17] --> [0,3]
+-------------- done --------------
+
+*/
+
 #if (FEAT_GYRO == 1) && (MPU6050_CALIB == 0)
 volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
 void dmpDataReady() {
@@ -417,9 +546,107 @@ void setup() {
     Serial.println("-------------- done --------------");
 }
 #else
+
+#if FEAT_GYRO
+void GyroTask(void *pvParameters) {
+    // join I2C bus (I2Cdev library doesn't do this automatically)
+
+    // initialize device
+    if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+        DBGLOG(Info, "Initializing I2C devices...");
+        mpu.initialize();
+        xSemaphoreGive(i2cSemaphore);
+    }
+    if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+        DBGLOG(Info, "Initializing DMP...");
+        devStatus = mpu.dmpInitialize();
+        xSemaphoreGive(i2cSemaphore);
+    }
+
+    if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+        // verify connection
+        DBGLOG(Info, "Testing device connections...");
+        DBGLOG(Info, mpu.testConnection() ? "MPU6050 connection successful" : "MPU6050 connection failed");
+        xSemaphoreGive(i2cSemaphore);
+    }
+
+    if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+        // load and configure the DMP
+        DBGLOG(Info, "Initializing DMP...");
+        devStatus = mpu.dmpInitialize();
+        xSemaphoreGive(i2cSemaphore);
+    }
+    if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+        // supply your own gyro offsets here, scaled for min sensitivity
+        mpu.setXGyroOffset(220);
+        mpu.setYGyroOffset(76);
+        mpu.setZGyroOffset(-85);
+        mpu.setZAccelOffset(1788);  // 1688 factory default for my test chip
+        xSemaphoreGive(i2cSemaphore);
+    }
+
+    if (devStatus == 0) {
+        if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+            mpu.CalibrateAccel(6);
+            xSemaphoreGive(i2cSemaphore);
+        }
+        if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+            mpu.CalibrateGyro(6);
+            xSemaphoreGive(i2cSemaphore);
+        }
+        if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+            mpu.PrintActiveOffsets();
+            xSemaphoreGive(i2cSemaphore);
+        }
+        if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+            // turn on the DMP, now that it's ready
+            DBGLOG(Info, "Enabling DMP...");
+            mpu.setDMPEnabled(true);
+            // set our DMP Ready flag so the main loop() function knows it's okay to use it
+            DBGLOG(Info, "DMP ready! Waiting for first interrupt...");
+            dmpReady = true;
+            // get expected DMP packet size for later comparison
+            packetSize = mpu.dmpGetFIFOPacketSize();
+            xSemaphoreGive(i2cSemaphore);
+        }
+    } else {
+        DBGLOG(Error, "DMP Initialization failed (code %d)", devStatus);
+
+    }
+    while (1) {
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        if (dmpReady) {
+            if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+                if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {  // Get the Latest packet
+                  mpu.dmpGetQuaternion(&q, fifoBuffer);
+                  mpu.dmpGetGravity(&gravity, &q);
+                  mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+                  mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+                  mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+//                  DBGLOG(Info, "ypr\t%f\t%f\t%f", ypr[0] * 180/M_PI, ypr[1] * 180/M_PI, ypr[2] * 180/M_PI);
+                  g_ypr[0] = (int16_t)((ypr[0] * 180/M_PI)*100.0);
+                  g_ypr[1] = (int16_t)((ypr[1] * 180/M_PI)*100.0);
+                  g_ypr[2] = (int16_t)((ypr[2] * 180/M_PI)*100.0);
+                  DBGLOG(Info, "ypr\t%d\t%d\t%d", g_ypr[0], g_ypr[1], g_ypr[2]);
+                  g_acc[0] = (int16_t)((aaWorld.x * 180/M_PI)*100.0);
+                  g_acc[1] = (int16_t)((aaWorld.y * 180/M_PI)*100.0);
+                  g_acc[2] = (int16_t)((aaWorld.z * 180/M_PI)*100.0);
+                }
+                xSemaphoreGive(i2cSemaphore);
+
+//              DBGLOG(Info, "areal\t%d\t%d\t%d", aaReal.x, aaReal.y, aaReal.z);
+//              DBGLOG(Info, "aworld\t%d\t%d\t%d", aaWorld.x, aaWorld.y, aaWorld.z);
+          }
+      }
+    }
+    vTaskDelete(nullptr);
+}
+
+#endif
+
 void setup() {
   // put your setup code here, to run once:
-  Serial.begin(115200);
+    Serial.begin(115200);
     DBGINI(&Serial)
     DBGINI(&Serial, ESP32Timestamp::TimestampSinceStart)
   //    DBGINI(&Serial, ESP32Timestamp::TimestampSinceStart)
@@ -435,46 +662,18 @@ void setup() {
     DBGLOG(Debug, "Debug")
     DBGLOG(Info, "---------------------------------------------------------------"
                "---------")
-
-#if FEAT_GYRO
-    mpu.initialize();
-    pinMode(GYRO_INTERRUPT_PIN, INPUT);
-    // load and configure the DMP
-    DBGLOG(Info, "Initializing DMP...");
-    devStatus = mpu.dmpInitialize();
-
-    // verify connection
-    DBGLOG(Info, "Testing device connections...");
-    DBGLOG(Info, mpu.testConnection() ? "MPU6050 connection successful" : "MPU6050 connection failed");
-
-    // load and configure the DMP
-    DBGLOG(Info, "Initializing DMP..."));
-    devStatus = mpu.dmpInitialize();
-
-    // supply your own gyro offsets here, scaled for min sensitivity
-    mpu.setXGyroOffset(220);
-    mpu.setYGyroOffset(76);
-    mpu.setZGyroOffset(-85);
-    mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
-
-    if (devStatus == 0) {
-        mpu.CalibrateAccel(6);
-        mpu.CalibrateGyro(6);
-        mpu.PrintActiveOffsets();
-        // turn on the DMP, now that it's ready
-        DBGLOG(Info, "Enabling DMP...");
-        mpu.setDMPEnabled(true);
-        // set our DMP Ready flag so the main loop() function knows it's okay to use it
-        DBGLOG(Info, "DMP ready! Waiting for first interrupt...");
-        dmpReady = true;
-
-        // get expected DMP packet size for later comparison
-        packetSize = mpu.dmpGetFIFOPacketSize();
-    } else {
-        DBGLOG(Error, "DMP Initialization failed (code %d)", devStatus);
-
-    }
+#if FEAT_I2C               
+    #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+        Wire.begin();
+    #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+        Fastwire::setup(400, true);
+    #endif
+    i2cSemaphore = xSemaphoreCreateMutex();
 #endif
+
+#if FEAT_SERVO
+    ESP32PWM::allocateTimer(3);
+#endif    
 #if FEAT_RFID
     // Create a Task for the RFID Reading
     xTaskCreatePinnedToCore(
@@ -487,6 +686,25 @@ void setup() {
         0); /* pin task to core 0 */
 
 #endif
+#if FEAT_PCA9685
+    if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+        pwm.begin();
+        pwm.setOscillatorFrequency(27000000);
+        pwm.setPWMFreq(SERVO_FREQ);  // Analog servos run at ~50 Hz updates  
+        xSemaphoreGive(i2cSemaphore);
+    }
+#endif
+#if FEAT_GYRO
+    xTaskCreatePinnedToCore(
+        GyroTask, /* Task function. */
+        "GyroTask", /* name of the task. */
+        10000, /* Stack size of task */
+        NULL, /* parameter of the task */
+        1, /* priority of the task */
+        NULL, /* Task handle to keep track of created task */
+        0); /* pin task to core 0 */
+#endif
+
     onKiSCMessageReceived(recCallback);
     initESPNow();
     DBGLOG(Info, "---- Periphalscontroller ----");
@@ -512,12 +730,24 @@ void loop() {
   }
 #endif
 #if FEAT_GYRO
-    if (dmpReady) {
-        if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {  // Get the Latest packet
-            mpu.dmpGetQuaternion(&q, fifoBuffer);
-            mpu.dmpGetGravity(&gravity, &q);
-            mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+#endif
+#if FEAT_SERVO
+    if (periphalData.steeringActive) {
+        if (!steeringServo.attached()) {
+            steeringServo.attach(SERVO_PIN);
         }
+        steeringServo.write(periphalData.steering);
+    } else {
+        if (steeringServo.attached()) {
+            steeringServo.detach();
+        }
+    }
+#endif
+#if FEAT_PCA9685
+    uint16_t uiServoPulse = map(uiLastThrottle, 0, 1023, SERVOMIN, SERVOMAX);
+    if (xSemaphoreTake(i2cSemaphore, portMAX_DELAY)) {
+        pwm.setPWM(15, 0, uiServoPulse);
+        xSemaphoreGive(i2cSemaphore);
     }
 #endif
     loopESPNow();
