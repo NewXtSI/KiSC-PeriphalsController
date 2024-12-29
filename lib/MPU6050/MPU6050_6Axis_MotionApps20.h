@@ -35,8 +35,8 @@ THE SOFTWARE.
 ===============================================
 */
 
-#ifndef _MPU6050_6AXIS_MOTIONAPPS20_H_
-#define _MPU6050_6AXIS_MOTIONAPPS20_H_
+#ifndef INCLUDE_MPU6050_6AXIS_MOTIONAPPS20_INCLUDED
+#define INCLUDE_MPU6050_6AXIS_MOTIONAPPS20_INCLUDED
 
 // take ownership of the "MPU6050" typedef
 #define I2CDEVLIB_MPU6050_TYPEDEF
@@ -150,4 +150,4 @@ class MPU6050_6Axis_MotionApps20 : public MPU6050_Base {
 
 typedef MPU6050_6Axis_MotionApps20 MPU6050;
 
-#endif /* _MPU6050_6AXIS_MOTIONAPPS20_H_ */
+#endif  /* INCLUDE_MPU6050_6AXIS_MOTIONAPPS20_INCLUDED */
