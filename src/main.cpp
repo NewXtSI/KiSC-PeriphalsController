@@ -1,9 +1,388 @@
 #include <Arduino.h>
 #include <WiFi.h>
-
+#include "soc/spi_struct.h"
 #define ESP32DEBUGGING
 #include <ESP32Logger.h>
+#include <SPI.h>
 
+#include "soc/spi_reg.h"
+#include "esp32-hal-spi.h"
+#include "esp32-hal.h"
+
+struct spi_struct_t {
+    spi_dev_t * dev;
+#if !CONFIG_DISABLE_HAL_LOCKS
+    xSemaphoreHandle lock;
+#endif
+    uint8_t num;
+};
+
+
+#define PIN_CLK   16
+#define PIN_ACK   26
+#define PIN_CS    27
+#define PIN_MOSI  17
+#define PIN_MISO  25
+
+uint8_t transferByte(uint8_t data) {
+    uint iTries;
+    uint8_t result = 0;
+    //Serial.printf("OUT: %02X\n", data);
+    result = SPI.transfer(data);
+//    Serial.printf("%02X ", result);
+    //Serial.printf("IN:  %02X\n", result);
+#if 0    
+    while (digitalRead(PIN_ACK) != LOW) {
+        if (iTries++ > 100) {
+            DBGLOG(Error, "No ACK received");
+            return 0;
+        }
+        delay(1);
+    }
+#endif    
+    esp_rom_delay_us(20);
+    return result;
+}
+
+void startTransaction() {
+    digitalWrite(PIN_CS, LOW);
+    SPI.beginTransaction(SPISettings(250000, LSBFIRST, SPI_MODE3));
+}
+
+void endTransaction() {
+    SPI.endTransaction();
+    digitalWrite(PIN_CS, HIGH);
+}
+void pollInfo();
+
+void setup() {
+    pinMode(PIN_CLK, OUTPUT);
+    pinMode(PIN_ACK, INPUT_PULLUP);
+    pinMode(PIN_CS, OUTPUT);
+    pinMode(PIN_MOSI, OUTPUT);
+    pinMode(PIN_MISO, INPUT);
+    digitalWrite(PIN_CS, HIGH);
+    SPI.setBitOrder(LSBFIRST);
+    
+    SPI.begin(PIN_CLK, PIN_MISO, PIN_MOSI, -1);
+    spi_struct_t * spi = SPI.bus();      
+    spi_dev_t *spidev;
+    spidev = spi->dev;
+//            uint32_t miso_delay_mode:  2;                   
+            /*MISO signals are delayed by spi_clk. 
+                0: zero  
+                1: if spi_ck_out_edge or spi_ck_i_edge is set 1  delayed by half cycle    else delayed by one cycle  
+                2: if spi_ck_out_edge or spi_ck_i_edge is set 1  delayed by one cycle  else delayed by half cycle  
+                3: delayed one cycle*/
+//            uint32_t miso_delay_num:   3;                   /*MISO signals are delayed by system clock cycles*/
+    
+    spidev->ctrl2.miso_delay_mode = 2;
+    spidev->ctrl2.miso_delay_num = 0;
+
+    Serial.begin(115200);
+    DBGINI(&Serial)
+    DBGINI(&Serial, ESP32Timestamp::TimestampSinceStart)
+  //    DBGINI(&Serial, ESP32Timestamp::TimestampSinceStart)
+    DBGLEV(Info)
+    DBGSTA
+    DBGLOG(Info, "---------------------------------------------------------------"
+                "---------")
+    DBGLOG(Info, "Enabled debug levels:")
+    DBGLOG(Error, "Error")
+    DBGLOG(Warning, "Warning")
+    DBGLOG(Info, "Info")
+    DBGLOG(Verbose, "Verbose")
+    DBGLOG(Debug, "Debug")
+    DBGLOG(Info, "---------------------------------------------------------------"
+               "---------")
+    startTransaction();
+    transferByte(0xFF);
+    transferByte(0xFF);
+    transferByte(0xFF);
+    transferByte(0xFF);
+    transferByte(0xFF);
+    transferByte(0xFF);
+    endTransaction();
+    pollInfo();
+    delay(100);
+    pollInfo();
+    delay(100);
+    pollInfo();
+    delay(100);
+
+}
+
+void decodeButtons(uint8_t btn1, uint8_t btn2, char *str) {
+    btn1 = ~btn1;
+    btn2 = ~btn2;
+    sprintf(str, "%s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+        (btn1 & 0x80) ? "L" : " ",
+        (btn1 & 0x40) ? "D" : " ",
+        (btn1 & 0x20) ? "R" : " ",
+        (btn1 & 0x10) ? "U" : " ",
+        (btn1 & 0x08) ? "St" : "  ",
+        (btn1 & 0x04) ? "R3" : "  ",
+        (btn1 & 0x02) ? "L3" : "  ",
+        (btn1 & 0x01) ? "Se" : "  ",
+        (btn2 & 0x80) ? "□" : " ",
+        (btn2 & 0x40) ? "X" : " ",
+        (btn2 & 0x20) ? "O" : " ",
+        (btn2 & 0x10) ? "△" : " ",
+        (btn2 & 0x08) ? "R1" : "  ",
+        (btn2 & 0x04) ? "L1" : "  ",
+        (btn2 & 0x02) ? "R2" : "  ",
+        (btn2 & 0x01) ? "L2" : "  "
+        );
+}
+
+void decodePressure(uint8_t *pressures, char *str) {
+    sprintf(str, "L: %02X, D: %02X, R: %02X, U: %02X, □: %02X, X: %02X, O: %02X, △: %02X, R1: %02X, L1: %02X, R2: %02X, L2: %02X",
+        pressures[0], pressures[1], pressures[2], pressures[3], pressures[4], pressures[5], pressures[6], pressures[7],
+        pressures[8], pressures[9], pressures[10], pressures[11]);
+}
+
+void pollInfo() {
+    startTransaction();
+    uint8_t data[21];
+    memset(data, 0, sizeof(data));
+    uint8_t bytesToRead = 3;
+    data[0] = transferByte(0x01);
+    data[1] = transferByte(0x42);
+    // Type in data[1]
+    switch (data[1]) {
+      case 0x41:
+        DBGLOG(Info, "Digital controller (SCPH-1010)");
+        bytesToRead = 3;
+        break;
+      case 0x53:
+        DBGLOG(Info, "Analog Joystick (SCPH-1110) & Dual Analog (SCPH-1180) (In Green LED mode)");
+        bytesToRead = 7;
+        break;
+      case 0x73:
+        DBGLOG(Info, "Dual Analog & DualShock 1/2 (SCPH-1180, SCPH-1200, SCPH-10010)  (In Analog mode)");
+        bytesToRead = 7;  
+        break;
+      case 0x79:
+//        DBGLOG(Info, "DualShock 2 (SCPH-10010) (In Analog mode + pressure activated by game)");
+        bytesToRead = 19;
+        break;
+      default:
+        DBGLOG(Info, "Unknown controller type %02X", data[1]);
+        break;
+    }
+    for (int i = 0; i < bytesToRead; i++) {
+        if ((i == 1) || (i == 2) || (i == 35) || (i == 6))
+          data[i+2] = transferByte(0xff); // 6+7 Vibration
+        else 
+          data[i+2] = transferByte(0x00); // 4+5 Vibration
+    }
+    endTransaction();
+    char str[255];
+    static char lastButtonStr[255];
+    static char lastPressureStr[255];
+    switch (data[1]) {
+      case 0x41:
+        decodeButtons(data[3], data[4], str);
+        DBGLOG(Info, "Buttons: %02X %02X %02X -> %s", data[2], data[3], data[4], str);
+        break;
+      case 0x53:
+      case 0x73:
+        decodeButtons(data[3], data[4], str);
+        DBGLOG(Info, "Buttons: %02X %02X %02X -> %s", data[2], data[3], data[4], str);
+        break;
+      case 0x79:
+        decodeButtons(data[3], data[4], str);
+        if (strcmp(str, lastButtonStr) != 0) {
+          strcpy(lastButtonStr, str);
+          DBGLOG(Info, "Buttons: %02X %02X %02X -> %s", data[2], data[3], data[4], str);
+        }
+//        DBGLOG(Info, "Buttons: %02X %02X %02X -> %s", data[2], data[3], data[4], str);
+        decodePressure(&data[9], str);
+        if (strcmp(str, lastPressureStr) != 0) {
+          strcpy(lastPressureStr, str);
+          DBGLOG(Info, "Pressure: %s", str);
+        }
+  //      DBGLOG(Info, "  Pressure: %s", str);
+        break;
+
+    }
+}
+
+void configureController() {
+    uint8_t data[21];
+
+/*
+0x43 Config mode cmd
+Supported by DualShock 1/2 only
+
+Enter or exit configuration mode. This is also used to detect DualShock 1/2 vs legacy controllers (Digital, Flightstick, Dual Analog) as the latter will not ACK the command byte.
+
+TX: 0142000000
+RX: FF735AFFFF
+
+          ┌Enter config mode.
+          ├┐
+TX: 014300010000000000
+RX: FF735AFFFF957D7388
+      ├┘  └┬─────────┘
+      ID   └Ctrl provide poll status via 0x43 if config mode not active.
+
+TX: 0145005A5A5A5A5A5A
+RX: FFF35A030201020100
+      ├┘
+      └ID is 0xF3 until config mode is exit.
+
+          ┌Clear config mode.
+          ├┐
+TX: 014300005A5A5A5A5A
+RX: FFF35A000000000000
+      ├┘  └┬─────────┘
+      ID   └Ctrl do not provide poll data while in config mode via 0x43.
+
+TX: 0142000000
+RX: FF735AFFFF
+      ├┘
+      └ID revert on config mode exit.
+      */    
+    startTransaction();
+    // 01 43 00 01 00 00 00 00 00
+    data[0] = transferByte(0x01);
+    data[1] = transferByte(0x43);
+    data[2] = transferByte(0x00);
+    data[3] = transferByte(0x01);
+    data[4] = transferByte(0x00);
+    data[5] = transferByte(0x00);
+    data[6] = transferByte(0x00);
+    data[7] = transferByte(0x00);
+    data[8] = transferByte(0x00);
+    endTransaction();
+    DBGLOG(Info, "Configmode Data: %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+      data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8]);
+    delay(500);
+/*
+0x44 Enable analog cmd
+Supported by DualShock 1/2 only
+
+Require to be in config mode
+
+This allows software to enable/disable the analog mode without requiring users to use analog button.
+
+          ┌Enable analog mode. (0x00 Disable)
+          ├┐
+TX: 014400010300000000
+RX: FFF35A000000000000 
+*/    
+    startTransaction();
+    data[0] = transferByte(0x01);
+    data[1] = transferByte(0x44);
+    data[2] = transferByte(0x00);
+    data[3] = transferByte(0x01);
+    data[4] = transferByte(0x00);
+    data[5] = transferByte(0xFF);
+    data[6] = transferByte(0xFF);
+    data[7] = transferByte(0xFF);
+    data[8] = transferByte(0xFF);
+    endTransaction();
+    delay(500);
+/*
+0x4D Enable Rumble cmd
+Supported by DualShock 1/2 only
+
+Require to be in config mode
+
+This configure which byte offset in the 0x42 poll cmd are used for each rumble motor.
+
+0x00 configure the right small motor, 0x01 configure the left big motor, 0xFF disable this offset.
+
+Typically the 1st byte is the right small motor and the 2nd byte: is the left big motor.
+
+                ┌New rumble mapping
+          ┌─────┴────┐
+TX: 014D000001FFFFFFFF
+RX: FFF35AFFFFFFFFFFFF
+          └─────┬────┘
+                └Previous rumble mapping
+                */    
+    startTransaction();
+    data[0] = transferByte(0x01);   // Rumble
+    data[1] = transferByte(0x4D);
+    data[2] = transferByte(0x00);
+    data[3] = transferByte(0x01);
+    data[4] = transferByte(0x02);
+    data[5] = transferByte(0xFF);
+    data[6] = transferByte(0xFF);
+    data[7] = transferByte(0xFF);
+    data[8] = transferByte(0xFF);
+    endTransaction();
+    delay(500);
+/*
+0x4F Polling config cmd
+Supported by DualShock 2 only
+
+Require to be in config mode
+
+This enables digital buttons, axes and pressure buttons base on a mask.
+
+            ┌Polling enable mask
+          ┌─┴──┐
+TX: 014F00FFFF03000000
+RX: FFF35A00000000005A 
+*/    
+    startTransaction();
+    data[0] = transferByte(0x01);
+    data[1] = transferByte(0x4F);
+    data[2] = transferByte(0x00);
+    data[3] = transferByte(0xFF);
+    data[4] = transferByte(0xFF);
+    data[5] = transferByte(0x03);
+    data[6] = transferByte(0x00);
+    data[7] = transferByte(0x00);
+    data[8] = transferByte(0x00);
+    endTransaction();
+    delay(500);
+    startTransaction();
+    // 01 43 00 01 00 00 00 00 00
+    data[0] = transferByte(0x01);
+    data[1] = transferByte(0x43);
+    data[2] = transferByte(0x00);
+    data[3] = transferByte(0x00);
+    data[4] = transferByte(0x00);
+    data[5] = transferByte(0x00);
+    data[6] = transferByte(0x00);
+    data[7] = transferByte(0x00);
+    data[8] = transferByte(0x00);
+    endTransaction();
+
+
+/*
+0x41 Polling config status cmd
+Supported by DualShock 2 only
+
+Require to be in config mode
+
+This return a mask base on the polling config.
+
+TX: 0141005A5A5A5A5A5A
+RX: FFF35AFFFF0300005A 
+          └─┬──┘
+            └Polling enable mask
+            
+            */
+    delay(1000);      
+}
+
+bool configured = false;
+void loop() {
+//    DBGLOG(Info, "--------------------------------");
+    pollInfo();
+    delay(100);
+    if (!configured) {
+        configureController();
+        configured = true;
+    }
+}
+
+#if 0
 #include "../KiSC-ESP-Now-Protocol/include/kisc-espnow.h"
 #include <OneButton.h>
 
@@ -795,4 +1174,5 @@ void loop() {
 
     motorButton.tick();
 }
+#endif
 #endif
