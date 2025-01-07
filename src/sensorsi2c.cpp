@@ -1,3 +1,5 @@
+#include "pins.h"
+
 #include "sensors.h"
 #include "sensorsi2c.h"
 
@@ -10,6 +12,7 @@
 #include <VL53L0X.h>
 
 #include <PCF8575.h>
+#include <MCP23017.h>
 
 #include "MPU6050_6Axis_MotionApps20.h"
 
@@ -32,6 +35,8 @@
 #define I2CADDR_GYRO        0x68
 #define I2CADDR_SERVO       0x40
 #define I2CADDR_SERVO_ALL   0x70
+#define I2CADDR_MCP23017    0x20
+#define I2CADDR_MCP23017_2  0x21
 
 #define I2CSCANINTERVAL_S  10     // 10 Sekunden
 
@@ -111,6 +116,24 @@ void scanI2C(int busnum) {
                     sensorData.gyroSensorData.semaphore = (busnum == 0) ? i2cSemaphore : i2cSemaphore_SecondInterface;
                     DBGLOG(Info, "Gyro found at address 0x%02X on Bus %d", address, busnum);
                 }
+            } else if (address == I2CADDR_MCP23017) {
+                if (((sensorData.mcp23017Data.state == SensorState::ERROR) ||
+                    (sensorData.mcp23017Data.state == SensorState::UNKNOWN)) &&
+                    (sensorData.mcp23017Data.state != SensorState::SENSORDISABLED)) {
+                    sensorData.mcp23017Data.state = SensorState::INITIALIZING;
+                    sensorData.mcp23017Data.wire = i2cbus;
+                    sensorData.mcp23017Data.semaphore = (busnum == 0) ? i2cSemaphore : i2cSemaphore_SecondInterface;
+                    DBGLOG(Info, "MCP23017 found at address 0x%02X on Bus %d", address, busnum);
+                }
+            } else if (address == I2CADDR_MCP23017_2) {
+                if (((sensorData.mcp230172Data.state == SensorState::ERROR) ||
+                    (sensorData.mcp230172Data.state == SensorState::UNKNOWN)) &&
+                    (sensorData.mcp230172Data.state != SensorState::SENSORDISABLED)) {
+                    sensorData.mcp230172Data.state = SensorState::INITIALIZING;
+                    sensorData.mcp230172Data.wire = i2cbus;
+                    sensorData.mcp230172Data.semaphore = (busnum == 0) ? i2cSemaphore : i2cSemaphore_SecondInterface;
+                    DBGLOG(Info, "MCP23017_2 found at address 0x%02X on Bus %d", address, busnum);
+                }
             } else if (address == I2CADDR_SERVO) {
                 if (((sensorData.pwmDriverData.state == SensorState::ERROR) ||
                     (sensorData.pwmDriverData.state == SensorState::UNKNOWN)) &&
@@ -142,6 +165,8 @@ void initNFC();
 void initTOF();
 void initPortexpander();
 void initAccelGyro();
+void initMCP23017();
+void initMCP23017_2();
 
 /*
 Steuerung: PWM (Pulsbreitenmodifikation)
@@ -396,6 +421,46 @@ void I2CPortexpanderTask(void *pvParameters) {
     vTaskDelete(nullptr);
 }
 
+void I2CMCP23017Task(void *pvParameters) {
+    if (xSemaphoreTake(sensorData.mcp23017Data.semaphore, portMAX_DELAY)) {
+        MCP23017 mcp = MCP23017(I2CADDR_MCP23017, *(sensorData.mcp23017Data.wire));
+        mcp.init();
+        for (int i=0; i < 16; i++) {
+            mcp.pinMode(i, INPUT_PULLUP);
+        }
+        xSemaphoreGive(sensorData.mcp23017Data.semaphore);
+        sensorData.mcp23017Data.state = SensorState::READY;
+        while (sensorData.mcp23017Data.state == SensorState::READY) {
+            if (xSemaphoreTake(sensorData.mcp23017Data.semaphore, 200 / portTICK_PERIOD_MS)) {
+                uint16_t value = mcp.read();    // Alle 16 Inputs lesen
+                xSemaphoreGive(sensorData.mcp23017Data.semaphore);
+                vTaskDelay(10 / portTICK_PERIOD_MS);
+            }
+        }
+    }
+    vTaskDelete(nullptr);
+}
+
+void I2CMCP230172Task(void *pvParameters) {
+    if (xSemaphoreTake(sensorData.mcp230172Data.semaphore, portMAX_DELAY)) {
+        MCP23017 mcp = MCP23017(I2CADDR_MCP23017_2, *(sensorData.mcp230172Data.wire));
+        mcp.init();
+        for (int i=0; i < 16; i++) {
+            mcp.pinMode(i, INPUT_PULLUP);
+        }
+        xSemaphoreGive(sensorData.mcp230172Data.semaphore);
+        sensorData.mcp230172Data.state = SensorState::READY;
+        while (sensorData.mcp230172Data.state == SensorState::READY) {
+            if (xSemaphoreTake(sensorData.mcp230172Data.semaphore, 200 / portTICK_PERIOD_MS)) {
+                uint16_t value = mcp.read();    // Alle 16 Inputs lesen
+                xSemaphoreGive(sensorData.mcp230172Data.semaphore);
+                vTaskDelay(10 / portTICK_PERIOD_MS);
+            }
+        }
+    }
+    vTaskDelete(nullptr);
+}
+
 void I2CTOFTask(void *pvParameters) {
     VL53L0X sensor;
     sensor.setBus(sensorData.tofSensorData.wire);
@@ -603,9 +668,11 @@ void initI2CSensors() {
     sensorData.gyroSensorData.state = SensorState::UNKNOWN;
     sensorData.expanderSensorData.state = SensorState::SENSORDISABLED;
     sensorData.pwmDriverData.state = SensorState::SENSORDISABLED;
+    sensorData.mcp23017Data.state = SensorState::UNKNOWN;
+    sensorData.mcp230172Data.state = SensorState::UNKNOWN;
 
-    Wire.begin();
-    Wire1.begin(17, 16);
+    Wire.begin(I2C_SDA, I2C_SCL);
+    Wire1.begin(I2C_SDA2, I2C_SCL2);
     Wire.setClock(400000);
     Wire1.setClock(400000);
 //    Wire.setTimeOut(1500);
@@ -635,6 +702,14 @@ void loopI2CSensors() {
         sensorData.pwmDriverData.state = SENSORBUSY;
         initServo();
     }
+    if (sensorData.mcp23017Data.state == SensorState::INITIALIZING) {
+        sensorData.mcp23017Data.state = SENSORBUSY;
+        initMCP23017();
+    }
+    if (sensorData.mcp230172Data.state == SensorState::INITIALIZING) {
+        sensorData.mcp230172Data.state = SENSORBUSY;
+        initMCP23017_2();
+    }
 #if 0
 #endif
 }
@@ -662,4 +737,14 @@ void initAccelGyro() {
 void initServo() {
     DBGLOG(Info, "Initializing Servo driver");
     xTaskCreate(I2CServoTask, "I2CServoTask", 4096, NULL, 1, NULL);
+}
+
+void initMCP23017() {
+    DBGLOG(Info, "Initializing MCP23017");
+    xTaskCreate(I2CMCP23017Task, "I2CMCP23017Task", 4096, NULL, 1, NULL);
+}
+
+void initMCP23017_2() {
+    DBGLOG(Info, "Initializing MCP23017 2");
+    xTaskCreate(I2CMCP230172Task, "I2CMCP230172Task", 4096, NULL, 1, NULL);
 }

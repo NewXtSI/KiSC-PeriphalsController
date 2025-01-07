@@ -1,3 +1,6 @@
+#include <Arduino.h>
+#include <Wire.h>
+
 #include "sensors.h"
 #include "sensorsi2c.h"
 
@@ -6,8 +9,10 @@
 
 SensorData   sensorData;
 
-#define ANALOGPIN_THROTTLE 35
-#define ANALOGPIN_BRAKE 34
+#include "pins.h"
+#include "thunderv5.h"
+
+
 #define TARGET_ANALOG_MIN   0
 #define TARGET_ANALOG_MAX   511
 
@@ -41,6 +46,7 @@ class AnalogSensor {
 
 AnalogSensor throttleSensor;
 AnalogSensor brakeSensor;
+AnalogSensor steeringSensor;
 
 float calculateAverage(float *arr, int size) {
     float sum = 0;
@@ -59,7 +65,7 @@ float calculateStandardDeviation(float *arr, int size, float avg) {
 }
 
 void initAnalogSensors() {
-     DBGLEV(Debug)
+     DBGLEV(Info)
 
     sensorData.throttleState.value = 0;
     sensorData.brakeState.value = 0;
@@ -89,6 +95,7 @@ void initAnalogSensors() {
     brakeSensor.adMeasuredMax = AD_VALUE_MIN;
     brakeSensor.state = SensorState::UNKNOWN;
     brakeSensor.validRange = false;
+
     DBGLOG(Info, "Analog Sensors initialized");
 }
 
@@ -216,13 +223,26 @@ void loopAnalogSensors() {
 }
 
 void initSensors() {
-    initAnalogSensors();
-    initI2CSensors();
+//    initAnalogSensors();
+    pinMode(ANALOGPIN_STEERING, INPUT);
+    pinMode(ANALOGPIN_BRAKE, INPUT);
+    pinMode(ANALOGPIN_THROTTLE, INPUT);
+
+    thunderV5.begin(SPI_CS, SPI_SCK, SPI_MOSI,SPI_MISO, SPI_ACK);
+    //    initI2CSensors();
     //initI2C();
 }
 
+
 void loopSensors() {
-    loopAnalogSensors();
-    loopI2CSensors();
+    thunderV5.loop();
+//    loopAnalogSensors();
+    static uint16_t lastVal = 0;
+    uint16_t val = analogRead(ANALOGPIN_STEERING);
+    if (abs(val - lastVal) > 100) {
+        DBGLOG(Info, "Steering: %4d", val);
+        lastVal = val;
+    }
+//    loopI2CSensors();
     //loopI2C();
 }

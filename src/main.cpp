@@ -8,6 +8,11 @@
 #include <OneButton.h>
 #include "sensors.h"
 
+#include "pins.h"
+#include <ESP32Servo.h> 
+
+Servo steeringServo;  // create servo object to control a servo
+
 uint16_t uiThrottleMin = 32000;
 uint16_t uiThrottleMax = 0;
 uint16_t uiLastThrottle = 0;
@@ -52,10 +57,16 @@ void handleClick() {
 
 class MyPeripheralsMessageCallbacks : public PeripheralsMessageCallbacks {
     void onPeripheralsMessage(PeripheralsControlMessage pm) {
-        DBGLOG(Verbose, "Peripherals message received");
         if (pm.steeringActive) {
+            uint8_t servoAngleLeft = 0;
+            uint8_t servoAngleRight = 180;
+
             periphalData.steeringActive = true;
             periphalData.steering = pm.steering;
+            DBGLOG(Info, "Peripherals message received, Steering: %d", periphalData.steering);
+            uint8_t servoAngle = map(periphalData.steering, -1023, 1023, servoAngleLeft, servoAngleRight);
+            steeringServo.write(servoAngle);
+
         } else {
             periphalData.steeringActive = false;
         }
@@ -92,7 +103,9 @@ void setup() {
     DBGLOG(Info, "MAC address: %s", WiFi.macAddress().c_str());
     // Single Click event attachment
     motorButton.attachClick(handleClick);
-
+    steeringServo.setPeriodHertz(200);// Standard 50hz servo
+    steeringServo.attach(STEERING_SERVO, 500, 2400); 
+    steeringServo.write(90);
 }
 
 int8_t    iState = 0;

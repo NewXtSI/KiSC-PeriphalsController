@@ -2,7 +2,7 @@
 #define INCLUDE_SENSORS_INCLUDED
 #include <Arduino.h>
 #include <Wire.h>
-#include <stdint.h> 
+#include <stdint.h>
 
 
 // RFID Cards:
@@ -61,6 +61,13 @@ class I2CPWMDriverData {
         SemaphoreHandle_t semaphore;
 };
 
+class I2CMCP23017Data {
+ public:
+        SensorState state = UNKNOWN;
+        TwoWire     *wire;
+        SemaphoreHandle_t semaphore;
+};
+
 class AnalogSensorData {
  public:
         uint16_t    value;
@@ -81,11 +88,14 @@ class SensorData {
         I2CPortExpanderData expanderSensorData;
         I2CGyroSensorData   gyroSensorData;
         I2CPWMDriverData    pwmDriverData;
+        I2CMCP23017Data     mcp23017Data;
+        I2CMCP23017Data     mcp230172Data;
 
         AnalogSensorData    throttleState;
         AnalogSensorData    brakeState;
 
         ButtonSensorData    buttons;
+        
 };
 
 void initSensors();
